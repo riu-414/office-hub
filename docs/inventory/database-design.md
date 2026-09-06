@@ -2,127 +2,37 @@
 
 | 項目 | 内容 |
 |---|---|
-| バージョン | 1.2 |
+| バージョン | 2.0 |
 | 作成日 | 2026-09-03 |
 | 対象 DBMS | MySQL 8.0（InnoDB） |
-| 関連文書 | 要件定義書 v1.0 |
+| 関連文書 | `docs/common/database-design.md` / `docs/inventory/requirements.md` |
 
 ---
 
-## 1. 共通方針
+## 1. 本書の範囲
 
-### 1.1 文字コード・照合順序
+備品在庫管理システム固有のテーブルを定義する。
 
-| 項目 | 設定 | 理由 |
-|---|---|---|
-| 文字セット | `utf8mb4` | 絵文字・機種依存文字を含む備品名を安全に扱うため |
-| 照合順序 | `utf8mb4_ja_0900_as_cs` | 日本語の並び順を正しく扱う。**大文字小文字を区別する**（備品コード `AB-01` と `ab-01` を別物として扱いたいため） |
-| ストレージエンジン | InnoDB | トランザクションと行ロックが必須（要件定義 §10.2） |
+**全テーブルに共通する方針は `docs/common/database-design.md` §1 に定める。** 文字コード・照合順序、命名規約、共通カラム、論理削除とユニーク制約（生成列方式）、金額・数量の型は本書では繰り返さない。
 
-### 1.2 命名規約
-
-| 対象 | 規約 | 例 |
-|---|---|---|
-| テーブル名 | スネークケース・複数形 | `stock_transactions` |
-| カラム名 | スネークケース・単数形 | `on_hand_quantity` |
-| 主キー | `id`（`BIGINT UNSIGNED AUTO_INCREMENT`） | |
-| 外部キー | `<単数形テーブル名>_id` | `item_id` |
-| 真偽値 | `is_` プレフィックス | `is_active` |
-| 日時 | `_at` サフィックス | `confirmed_at` |
-| 日付のみ | `_on` サフィックス | `due_on` |
-| インデックス | `idx_<テーブル>_<カラム列>` | `idx_stock_tx_item_occurred` |
-| ユニーク制約 | `uq_<テーブル>_<カラム列>` | `uq_items_code` |
-| 外部キー制約 | `fk_<テーブル>_<カラム>` | `fk_items_category_id` |
-
-### 1.3 共通カラム
-
-| カラム | 型 | 適用範囲 | 備考 |
-|---|---|---|---|
-| `created_at` / `updated_at` | `TIMESTAMP NULL` | 全テーブル | Laravel の `timestamps()` |
-| `deleted_at` | `TIMESTAMP NULL` | マスタ系のみ | 論理削除。**トランザクション系には付けない**（要件定義 §10.3） |
-
-**論理削除を使うテーブル：** `users`, `items`, `categories`, `warehouses`, `departments`
-**論理削除を使わないテーブル：** `stock_transactions`, `loans`, `stocktakings`, `stocktaking_lines`, `audit_logs`
-
-在庫の履歴を論理削除できてしまうと、「削除されていない行だけを集計する」という条件が全ての在庫計算に混入し、集計キャッシュとの整合性検証も複雑になる。履歴は消さないという方針（要件定義 §10.3）を、スキーマの段階で強制する。
-
-### 1.4 論理削除とユニーク制約
-
-**MySQL の UNIQUE 制約は NULL を互いに異なる値として扱う。** そのため `UNIQUE (email, deleted_at)` としても、`deleted_at` が NULL の行同士では制約が働かず、同じメールアドレスを何行でも登録できてしまう。
-
-本システムでは、論理削除を行うテーブルのユニーク項目に対し、**生成列（Generated Column）を使う**。
-
-```sql
--- 例：users テーブル
-email             VARCHAR(255) NOT NULL,
-deleted_at        TIMESTAMP NULL,
-email_unique_key  VARCHAR(255) GENERATED ALWAYS AS
-                  (IF(deleted_at IS NULL, email, NULL)) STORED,
-UNIQUE KEY uq_users_email (email_unique_key)
-```
-
-- 有効な行（`deleted_at IS NULL`）は `email` がそのまま入るので、**重複が正しく拒否される**
-- 論理削除された行は NULL になり、NULL 同士は重複とみなされないため、**同じ値で再登録できる**
-
-Laravel のマイグレーションでは次のように書く。
-
-```php
-$table->string('email_unique_key')->nullable()
-      ->storedAs('if(deleted_at is null, email, null)');
-$table->unique('email_unique_key', 'uq_users_email');
-```
-
-この方式を、`users.email` / `items.code` / `categories.name` / `warehouses.name` / `departments.name` に適用する。
-
-> **なぜアプリ側の検証だけで済ませないか：** 「登録前に同名が存在するか SELECT する」方式は、同時に届いた 2 リクエストが両方とも「存在しない」と判定してすり抜ける。一意性は DB の制約で担保し、アプリ側の検証は利用者に分かりやすいエラーを出すための補助と位置づける。
-
-### 1.5 金額・数量の型
-
-| 対象 | 型 | 理由 |
-|---|---|---|
-| 数量 | `INT`（符号付き） | `stock_transactions.quantity` は出庫を負で表すため符号が必要。在庫キャッシュ側は CHECK 制約で非負を保証 |
-| 単価・金額 | `DECIMAL(12, 2)` | 浮動小数点は金額に使わない |
+共通テーブル（`users` / `departments` / `systems` / `system_user_roles` / `audit_logs` / `idempotency_keys`）も同文書で定義する。
 
 ---
 
 ## 2. テーブル定義
 
-### 2.1 `users` — 利用者
+本書で定義するテーブルは以下。番号は §2.3 から始まる（§2.1 `users` / §2.2 `departments` は共通側へ移動したため欠番）。
 
-| カラム | 型 | NULL | デフォルト | 説明 |
-|---|---|---|---|---|
-| `id` | BIGINT UNSIGNED | NO | AUTO | 主キー |
-| `name` | VARCHAR(100) | NO | | 氏名 |
-| `email` | VARCHAR(255) | NO | | ログイン ID |
-| `email_verified_at` | TIMESTAMP | YES | NULL | |
-| `password` | VARCHAR(255) | NO | | bcrypt ハッシュ |
-| `role` | ENUM('admin','staff','member') | NO | 'member' | ロール |
-| `department_id` | BIGINT UNSIGNED | YES | NULL | 所属部署 |
-| `is_active` | BOOLEAN | NO | true | 無効化フラグ |
-| `remember_token` | VARCHAR(100) | YES | NULL | |
-| `created_at` / `updated_at` / `deleted_at` | TIMESTAMP | YES | NULL | |
-
-**制約・索引**
-
-- `email_unique_key` 生成列に `uq_users_email` UNIQUE（§1.4）
-- **メールアドレスは保存前に小文字へ正規化する。** 本システムの照合順序 `utf8mb4_ja_0900_as_cs` は大文字小文字を区別するため、正規化しないと `User@example.com` と `user@example.com` が別ユーザーとして登録できてしまう
-- `fk_users_department_id` FOREIGN KEY (`department_id`) REFERENCES `departments`(`id`) ON DELETE SET NULL
-
-> **ロールを ENUM にした理由：** ロールは 3 種で固定であり、権限そのものは Laravel の Policy 側に持たせる方針（要件定義 §4）のため、テーブル化する利点が薄い。ロールごとの細かい権限設定を後から求められた場合は `roles` / `permissions` テーブルへ移行する。
-
----
-
-### 2.2 `departments` — 部署
-
-| カラム | 型 | NULL | デフォルト | 説明 |
-|---|---|---|---|---|
-| `id` | BIGINT UNSIGNED | NO | AUTO | |
-| `name` | VARCHAR(100) | NO | | 部署名 |
-| `created_at` / `updated_at` / `deleted_at` | TIMESTAMP | YES | NULL | |
-
-- `name_unique_key` 生成列に `uq_departments_name` UNIQUE（§1.4）
-
----
+| テーブル | 役割 |
+|---|---|
+| `categories` | 備品カテゴリ |
+| `warehouses` | 保管場所（将来の拠点） |
+| `items` | 備品マスタ |
+| `item_stocks` | 現在庫の集計キャッシュ |
+| `stock_transactions` | 在庫変動の履歴。**在庫の唯一の正** |
+| `loans` | 貸出 |
+| `stocktakings` / `stocktaking_lines` | 棚卸しヘッダ / 明細 |
+| `notification_logs` | 通知の重複送信抑制用 |
 
 ### 2.3 `categories` — 備品カテゴリ
 
@@ -133,7 +43,7 @@ $table->unique('email_unique_key', 'uq_users_email');
 | `display_order` | INT | NO | 0 | 表示順 |
 | `created_at` / `updated_at` / `deleted_at` | TIMESTAMP | YES | NULL | |
 
-- `name_unique_key` 生成列に `uq_categories_name` UNIQUE（§1.4）
+- `name_unique_key` 生成列に `uq_categories_name` UNIQUE（共通DB設計書 §1.4）
 
 ---
 
@@ -145,7 +55,7 @@ $table->unique('email_unique_key', 'uq_users_email');
 | `name` | VARCHAR(100) | NO | | 「本社 3F 倉庫」など |
 | `created_at` / `updated_at` / `deleted_at` | TIMESTAMP | YES | NULL | |
 
-- `name_unique_key` 生成列に `uq_warehouses_name` UNIQUE（§1.4）
+- `name_unique_key` 生成列に `uq_warehouses_name` UNIQUE（共通DB設計書 §1.4）
 
 > v1 では備品ごとに 1 か所を紐付ける（要件定義 §12-4）。将来の拠点別在庫に備えて独立テーブルとして切っておく。
 
@@ -171,7 +81,7 @@ $table->unique('email_unique_key', 'uq_users_email');
 
 **制約・索引**
 
-- `code_unique_key` 生成列に `uq_items_code` UNIQUE（§1.4）
+- `code_unique_key` 生成列に `uq_items_code` UNIQUE（共通DB設計書 §1.4）
 - `idx_items_name` INDEX (`name`) — キーワード検索用
 - `idx_items_category_warehouse` INDEX (`category_id`, `warehouse_id`) — 絞込用
 - `fk_items_category_id` FK → `categories`(`id`) ON DELETE RESTRICT
@@ -339,59 +249,7 @@ $table->unique('email_unique_key', 'uq_users_email');
 
 ---
 
-### 2.12 `idempotency_keys` — 冪等性キー
-
-在庫変動 API の二重実行を防ぐ（API 設計書 §1.8）。
-
-| カラム | 型 | NULL | デフォルト | 説明 |
-|---|---|---|---|---|
-| `key` | CHAR(36) | NO | | **主キー。**クライアントが生成する UUID |
-| `user_id` | BIGINT UNSIGNED | NO | | 発行したユーザー |
-| `endpoint` | VARCHAR(255) | NO | | メソッド＋パス |
-| `request_hash` | CHAR(64) | NO | | リクエストボディの SHA-256 |
-| `status_code` | SMALLINT UNSIGNED | YES | NULL | 初回のレスポンスコード |
-| `response_body` | JSON | YES | NULL | 初回のレスポンス本文 |
-| `created_at` | TIMESTAMP | NO | | |
-
-**制約・索引**
-
-- PRIMARY KEY (`key`)
-- `idx_idempotency_created` INDEX (`created_at`) — 24 時間経過分の削除用
-
-> **処理の流れ**
->
-> 1. `key` を PRIMARY KEY として INSERT を試みる（`status_code` は NULL のまま）
-> 2. **重複エラーになった場合＝すでに同じキーで処理が始まっている**
->    - `status_code` が入っていれば、保存済みのレスポンスをそのまま返す
->    - まだ NULL なら「処理中」として 409 を返し、クライアントに待たせる
-> 3. INSERT に成功したら本処理を実行し、結果を `status_code` / `response_body` に書き戻す
-> 4. `request_hash` が初回と異なる場合は 422（同じキーで違う内容を送るのは誤用）
->
-> **重複検出を DB の PRIMARY KEY に任せている点が要点。**「SELECT して無ければ INSERT」だと、同時に届いた 2 リクエストが両方とも「無い」と判定してすり抜ける。
->
-> 古いキーは `php artisan idempotency:prune`（日次）で 24 時間経過分を削除する。
-
----
-
-### 2.13 `audit_logs` — 監査ログ
-
-| カラム | 型 | NULL | デフォルト | 説明 |
-|---|---|---|---|---|
-| `id` | BIGINT UNSIGNED | NO | AUTO | |
-| `user_id` | BIGINT UNSIGNED | YES | NULL | 操作者。バッチ実行時は NULL |
-| `action` | VARCHAR(50) | NO | | 'created' / 'updated' / 'deleted' |
-| `auditable_type` | VARCHAR(100) | NO | | モデルのクラス名 |
-| `auditable_id` | BIGINT UNSIGNED | NO | | |
-| `old_values` | JSON | YES | NULL | 変更前 |
-| `new_values` | JSON | YES | NULL | 変更後 |
-| `ip_address` | VARCHAR(45) | YES | NULL | IPv6 対応で 45 桁 |
-| `user_agent` | VARCHAR(255) | YES | NULL | |
-| `created_at` | TIMESTAMP | YES | NULL | |
-
-- `idx_audit_logs_auditable` INDEX (`auditable_type`, `auditable_id`)
-- `idx_audit_logs_user_created` INDEX (`user_id`, `created_at`)
-
-> Eloquent の Observer で自動記録する。`password` や `remember_token` は記録対象から除外する。
+> **監査ログと冪等性キーは共通テーブル。** `docs/common/database-design.md` §2.5 / §2.6 に定義する。在庫の各操作も同じ仕組みを利用する。
 
 ---
 
@@ -506,10 +364,10 @@ php artisan stock:verify [--fix]
 
 ## 6. 初期データ（シード）
 
+ユーザー・部署・システム・利用権限のシードは共通側（共通DB設計書 §3）で投入する。本書は在庫データのみを扱う。
+
 | テーブル | 内容 |
 |---|---|
-| `users` | admin / staff / member 各 1 名（デモ用） |
-| `departments` | 総務部、営業部、開発部 |
 | `categories` | 文具、事務用品、PC 周辺機器、AV 機器、防災用品 |
 | `warehouses` | 本社 3F 倉庫、本社 1F 受付、営業所 |
 | `items` | 消耗品 40 件、貸出品 15 件 |
@@ -525,5 +383,6 @@ php artisan stock:verify [--fix]
 | 版 | 日付 | 内容 |
 |---|---|---|
 | 1.0 | 2026-09-03 | 初版 |
-| 1.2 | 2026-09-03 | 論理削除テーブルのユニーク制約を生成列方式に変更（§1.4）。メールアドレスの小文字正規化を追記 |
+| 2.0 | 2026-09-06 | 複数システム構成へ移行。共通方針・`users`・`departments`・`audit_logs`・`idempotency_keys` を `docs/common/database-design.md` へ分離 |
+| 1.2 | 2026-09-03 | 論理削除テーブルのユニーク制約を生成列方式に変更。メールアドレスの小文字正規化を追記 |
 | 1.1 | 2026-09-03 | `is_low_stock` の判定式を修正（`reorder_point > 0` を条件に追加）、`item_stocks` 行の生成タイミングを明記、`idempotency_keys` テーブルを追加 |

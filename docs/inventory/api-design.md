@@ -2,177 +2,64 @@
 
 | 項目 | 内容 |
 |---|---|
-| バージョン | 1.1 |
+| バージョン | 2.0 |
 | 作成日 | 2026-09-03 |
-| 関連文書 | 要件定義書 v1.0 / DB 設計書 v1.0 |
+| 関連文書 | `docs/common/api-design.md` / `docs/inventory/requirements.md` / `docs/inventory/database-design.md` |
 
 ---
 
-## 1. 共通仕様
+## 1. 本書の範囲
 
-### 1.1 基本方針
+備品在庫管理システムの API を定義する。
 
-| 項目 | 内容 |
-|---|---|
-| スタイル | REST |
-| ベース URL | `/api/v1` |
-| データ形式 | JSON（`Content-Type: application/json`） |
-| 文字コード | UTF-8 |
-| 日時形式 | ISO 8601（例：`2026-09-03T14:30:00+09:00`） |
-| 日付形式 | `YYYY-MM-DD` |
-| 命名 | リクエスト・レスポンスともにスネークケース（PHP 側と揃える） |
+**API 共通仕様は `docs/common/api-design.md` §1 に定める。** 認証方式、レスポンス形式、エラー形式、HTTP ステータスコードの方針、一覧のページネーション、冪等性キーの仕組み、レート制限は本書では繰り返さない。認証・ポータル・ユーザー管理の API も同文書にある。
 
-**バージョニングを URL に含める理由：** ヘッダによるバージョニングより、ブラウザの開発者ツールやログでどのバージョンを叩いたかが一目で分かる。個人〜小規模の運用では可読性を優先する。
+### 1.1 パスと認可
 
-### 1.2 認証
-
-**Laravel Sanctum の SPA 認証（Cookie ベース）**を採用する。
+本システムの API はすべて `/api/v1/inventory/` 配下に置く。
 
 ```
-1. GET  /sanctum/csrf-cookie      → XSRF-TOKEN Cookie を取得
-2. POST /api/v1/auth/login        → セッション Cookie が発行される
-3. 以降のリクエストは Cookie を自動送信し、X-XSRF-TOKEN ヘッダを付与する
+/api/v1/inventory/items
+/api/v1/inventory/stock-transactions
+/api/v1/inventory/loans
+/api/v1/inventory/stocktakings
 ```
 
-| 項目 | 内容 |
-|---|---|
-| セッション Cookie | `HttpOnly`, `Secure`, `SameSite=Lax` |
-| CSRF | 状態変更系（POST/PUT/PATCH/DELETE）に `X-XSRF-TOKEN` ヘッダを必須とする |
-| セッション有効期限 | 8 時間（業務時間を想定）。操作があれば延長 |
+このプレフィックスに対して**ミドルウェアで一括して利用権限を確認する**。`system_user_roles` に (ログイン中ユーザー, `inventory`) の行が無ければ、個別のエンドポイントに到達する前に 403 `SYSTEM_ACCESS_DENIED` を返す（共通API設計書 §1.3）。
 
-> **トークン方式（Bearer + localStorage）を選ばなかった理由：** アクセストークンを localStorage に置くと XSS でトークンごと盗まれる。`HttpOnly` Cookie なら JavaScript から読めない。SPA と API を同一ドメインで運用する前提のため、Cookie 方式の制約（クロスドメイン）が問題にならない。
+その上で、各エンドポイントは Policy で**このシステムにおけるロール**（`admin` / `staff` / `member`）を確認する。
 
-### 1.3 レスポンス形式
+### 1.2 本システム固有のエラーコード
 
-**単一リソース**
-
-```json
-{
-  "data": {
-    "id": 12,
-    "code": "STA-0012",
-    "name": "ボールペン（黒）",
-    "type": "consumable",
-    "category": { "id": 1, "name": "文具" },
-    "warehouse": { "id": 1, "name": "本社3F倉庫" },
-    "unit": "本",
-    "reorder_point": 20,
-    "stock": {
-      "on_hand_quantity": 8,
-      "lent_quantity": 0,
-      "is_low_stock": true
-    },
-    "version": 3,
-    "created_at": "2026-04-01T10:00:00+09:00",
-    "updated_at": "2026-09-01T09:12:00+09:00"
-  }
-}
-```
-
-**一覧（ページネーション）**
-
-```json
-{
-  "data": [ /* ... */ ],
-  "meta": {
-    "current_page": 1,
-    "per_page": 20,
-    "total": 137,
-    "last_page": 7
-  }
-}
-```
-
-すべてのレスポンスは API Resource で整形し、Eloquent モデルをそのまま返さない。
-
-### 1.4 エラー形式
-
-```json
-{
-  "message": "在庫が不足しています。",
-  "error_code": "INSUFFICIENT_STOCK",
-  "errors": {
-    "quantity": ["出庫数が手元在庫（8本）を超えています。"]
-  }
-}
-```
-
-| フィールド | 説明 |
-|---|---|
-| `message` | 画面にそのまま表示できる日本語のメッセージ |
-| `error_code` | フロントが分岐に使う機械可読なコード |
-| `errors` | 項目別エラー。フォームの各入力欄に紐付ける |
-
-### 1.5 HTTP ステータスコードの方針
-
-| コード | 用途 |
-|---|---|
-| 200 | 取得・更新の成功 |
-| 201 | 作成の成功 |
-| 204 | 削除の成功（本文なし） |
-| 401 | 未認証 |
-| 403 | 権限不足 |
-| 404 | リソースが存在しない |
-| 409 | **競合**（楽観ロックの衝突、棚卸しの二重確定） |
-| 422 | バリデーションエラー、業務ルール違反（在庫不足など） |
-| 429 | レート制限 |
-| 500 | サーバエラー |
-
-> **在庫不足を 409 ではなく 422 にした理由：** 409 はリソースの状態が競合しているとき（他者の更新とぶつかった）に使い、422 は「送られた内容がルールを満たさない」ときに使う。在庫不足は入力値の問題としてフォームに表示したいため 422 とし、フロントは `errors.quantity` をそのまま入力欄に出せる。
-
-### 1.6 主なエラーコード
+共通エラーコード（共通API設計書 §1.7）に加えて、以下を定義する。
 
 | `error_code` | HTTP | 意味 |
 |---|---|---|
-| `VALIDATION_FAILED` | 422 | 入力値エラー |
 | `INSUFFICIENT_STOCK` | 422 | 手元在庫を超える出庫・貸出 |
 | `ITEM_NOT_RETURNABLE` | 422 | 消耗品を貸し出そうとした |
 | `EXCESS_RETURN_QUANTITY` | 422 | 貸出数を超える返却 |
 | `BACKDATE_OUT_OF_RANGE` | 422 | 7 日を超えるバックデート入力 |
-| `STALE_VERSION` | 409 | 楽観ロックの衝突（他ユーザーが先に更新） |
 | `ALREADY_CONFIRMED` | 409 | 確定済みの棚卸しを再確定しようとした |
 | `ALREADY_REVERSED` | 409 | 取消済みの履歴を再度取り消そうとした |
-| `REQUEST_IN_PROGRESS` | 409 | 同じ冪等性キーの処理が進行中 |
-| `IDEMPOTENCY_KEY_REUSED` | 422 | 同じ冪等性キーで異なる内容を送信した |
-| `FORBIDDEN` | 403 | 権限不足 |
 
-### 1.7 一覧 API の共通パラメータ
+> **在庫不足を 409 ではなく 422 にした理由：** 409 はリソースの状態が競合しているとき（他者の更新とぶつかった）に使い、422 は「送られた内容がルールを満たさない」ときに使う。在庫不足は入力値の問題としてフォームに表示したいため 422 とし、フロントは `errors.quantity` をそのまま入力欄に出せる。
 
-| パラメータ | 例 | 説明 |
-|---|---|---|
-| `page` | `2` | ページ番号（既定 1） |
-| `per_page` | `50` | 件数（既定 20、最大 100） |
-| `sort` | `-updated_at` | 並べ替え。先頭の `-` で降順 |
-| `q` | `ボールペン` | キーワード検索 |
-| その他 | `category_id`, `warehouse_id`, `type`, `low_stock` … | エンドポイントごとの絞込 |
+### 1.3 冪等性キーが必須のエンドポイント
 
-### 1.8 在庫変動 API の冪等性
+在庫を変動させる以下の POST は、`Idempotency-Key` ヘッダを必須とする（共通API設計書 §1.8）。
 
-在庫を変動させる POST（入庫・出庫・貸出・返却・取消・棚卸し確定）は、リクエストヘッダ `Idempotency-Key`（UUID）を**必須**とする。
+- 入庫登録 / 出庫登録
+- 貸出登録 / 返却登録
+- 在庫履歴の取消
+- 棚卸しの確定
 
-```
-Idempotency-Key: 6f8a1c2e-....
-```
-
-- 同じキーで再送された場合、処理は行わず**初回と同じレスポンスを返す**
-- キーと結果は `idempotency_keys` テーブルに 24 時間保持する（DB 設計書 §2.12）
-- 重複の検出は **PRIMARY KEY への INSERT が失敗するかどうか**で行う。「SELECT して無ければ INSERT」では同時リクエストがすり抜ける
-- 初回の処理がまだ完了していないうちに再送された場合は 409 `REQUEST_IN_PROGRESS` を返す
-- 同じキーで**異なる内容**を送ってきた場合は 422 `IDEMPOTENCY_KEY_REUSED`（リクエストボディのハッシュで判定）
-- フロントは送信ボタン押下時に UUID を生成し、リトライ時も同じキーを使う。**送信成功またはフォームを開き直すまでキーを変えない**
-
-> **導入する理由：** 通信の再送やダブルクリックで在庫が二重に引かれる事故は、在庫システムで最も起きやすく、最も影響が大きい。ボタンの二度押し防止（フロント）だけでは、通信タイムアウト後のリトライを防げない。
-
-### 1.9 レート制限
-
-| 対象 | 制限 |
-|---|---|
-| ログイン | 同一 IP から 5 回 / 分 |
-| その他の API | 認証ユーザーあたり 120 回 / 分 |
+**二重に実行されると在庫数がずれる操作**がすべて対象である。備品マスタの編集など、同じ内容を2回送っても結果が変わらない操作には課さない。
 
 ---
 
 ## 2. 権限マトリクス
+
+ここでの Admin / Staff / Member は、**本システムにおけるロール**（`system_user_roles.role`）を指す。全体管理者（`users.is_system_admin`）であることは、本システムの操作権限を意味しない（共通要件定義書 §3.2）。
 
 | 操作 | Admin | Staff | Member |
 |---|:---:|:---:|:---:|
@@ -186,86 +73,76 @@ Idempotency-Key: 6f8a1c2e-....
 | 棚卸しの実施 | ○ | ○ | × |
 | 棚卸しの確定 | ○ | ○ | × |
 | カテゴリ・保管場所マスタ | ○ | × | × |
-| ユーザー管理 | ○ | × | × |
-| 監査ログの閲覧 | ○ | × | × |
 
 権限判定は Laravel Policy に実装し、**すべてのエンドポイントで必ずサーバ側で検証する**。フロントの表示制御は補助でしかない。
+
+ユーザー管理と監査ログの閲覧は共通基盤の機能であり、全体管理者の権限で行う（共通API設計書 §2.3）。
 
 ---
 
 ## 3. エンドポイント一覧
 
-### 3.1 認証
-
-| メソッド | パス | 権限 | 説明 |
-|---|---|---|---|
-| GET | `/sanctum/csrf-cookie` | 誰でも | CSRF トークン取得 |
-| POST | `/api/v1/auth/login` | 誰でも | ログイン |
-| POST | `/api/v1/auth/logout` | 認証済 | ログアウト |
-| GET | `/api/v1/auth/me` | 認証済 | ログイン中のユーザー情報 |
-| PUT | `/api/v1/auth/password` | 認証済 | パスワード変更 |
+認証系（旧 §3.1）は共通API設計書 §2.1 へ移動したため、番号は §3.2 から始まる。
 
 ### 3.2 備品
 
 | メソッド | パス | 権限 | 説明 |
 |---|---|---|---|
-| GET | `/api/v1/items` | 全員 | 一覧・検索 |
-| POST | `/api/v1/items` | Staff+ | 登録 |
-| GET | `/api/v1/items/{item}` | 全員 | 詳細 |
-| PUT | `/api/v1/items/{item}` | Staff+ | 更新（楽観ロック） |
-| DELETE | `/api/v1/items/{item}` | Staff+ | 論理削除 |
-| GET | `/api/v1/items/lookup` | 全員 | 備品コードから引く（QR スキャン用） |
-| GET | `/api/v1/items/{item}/transactions` | 全員 | 在庫履歴 |
-| GET | `/api/v1/items/{item}/loans` | 全員 | 貸出状況 |
-| POST | `/api/v1/items/import` | Staff+ | CSV 一括登録 |
-| GET | `/api/v1/items/export` | 全員 | CSV 出力 |
+| GET | `/api/v1/inventory/items` | 全員 | 一覧・検索 |
+| POST | `/api/v1/inventory/items` | Staff+ | 登録 |
+| GET | `/api/v1/inventory/items/{item}` | 全員 | 詳細 |
+| PUT | `/api/v1/inventory/items/{item}` | Staff+ | 更新（楽観ロック） |
+| DELETE | `/api/v1/inventory/items/{item}` | Staff+ | 論理削除 |
+| GET | `/api/v1/inventory/items/lookup` | 全員 | 備品コードから引く（QR スキャン用） |
+| GET | `/api/v1/inventory/items/{item}/transactions` | 全員 | 在庫履歴 |
+| GET | `/api/v1/inventory/items/{item}/loans` | 全員 | 貸出状況 |
+| POST | `/api/v1/inventory/items/import` | Staff+ | CSV 一括登録 |
+| GET | `/api/v1/inventory/items/export` | 全員 | CSV 出力 |
 
 ### 3.3 在庫
 
 | メソッド | パス | 権限 | 説明 |
 |---|---|---|---|
-| POST | `/api/v1/items/{item}/receipts` | Staff+ | 入庫登録 |
-| POST | `/api/v1/items/{item}/issues` | Staff+ | 出庫（消費）登録 |
-| GET | `/api/v1/stock-transactions` | 全員 | 在庫履歴の横断検索 |
-| POST | `/api/v1/stock-transactions/{transaction}/reversal` | Staff+ | 取消（逆仕訳） |
-| GET | `/api/v1/stock-transactions/export` | 全員 | CSV 出力 |
+| POST | `/api/v1/inventory/items/{item}/receipts` | Staff+ | 入庫登録 |
+| POST | `/api/v1/inventory/items/{item}/issues` | Staff+ | 出庫（消費）登録 |
+| GET | `/api/v1/inventory/stock-transactions` | 全員 | 在庫履歴の横断検索 |
+| POST | `/api/v1/inventory/stock-transactions/{transaction}/reversal` | Staff+ | 取消（逆仕訳） |
+| GET | `/api/v1/inventory/stock-transactions/export` | 全員 | CSV 出力 |
 
 ### 3.4 貸出
 
 | メソッド | パス | 権限 | 説明 |
 |---|---|---|---|
-| GET | `/api/v1/loans` | Staff+ | 貸出一覧 |
-| POST | `/api/v1/loans` | Staff+ | 貸出登録 |
-| GET | `/api/v1/loans/{loan}` | Staff+ | 詳細 |
-| POST | `/api/v1/loans/{loan}/returns` | Staff+ | 返却登録（一部返却可） |
-| GET | `/api/v1/loans/mine` | 全員 | 自分の貸出状況 |
+| GET | `/api/v1/inventory/loans` | Staff+ | 貸出一覧 |
+| POST | `/api/v1/inventory/loans` | Staff+ | 貸出登録 |
+| GET | `/api/v1/inventory/loans/{loan}` | Staff+ | 詳細 |
+| POST | `/api/v1/inventory/loans/{loan}/returns` | Staff+ | 返却登録（一部返却可） |
+| GET | `/api/v1/inventory/loans/mine` | 全員 | 自分の貸出状況 |
 
 ### 3.5 棚卸し
 
 | メソッド | パス | 権限 | 説明 |
 |---|---|---|---|
-| GET | `/api/v1/stocktakings` | Staff+ | 一覧 |
-| POST | `/api/v1/stocktakings` | Staff+ | 開始（理論在庫をスナップショット） |
-| GET | `/api/v1/stocktakings/{stocktaking}` | Staff+ | 詳細＋明細 |
-| PUT | `/api/v1/stocktakings/{stocktaking}/lines` | Staff+ | 実地数の一括入力 |
-| POST | `/api/v1/stocktakings/{stocktaking}/confirm` | Staff+ | 確定（調整トランザクション発行） |
-| DELETE | `/api/v1/stocktakings/{stocktaking}` | Staff+ | 中止（下書きのみ） |
+| GET | `/api/v1/inventory/stocktakings` | Staff+ | 一覧 |
+| POST | `/api/v1/inventory/stocktakings` | Staff+ | 開始（理論在庫をスナップショット） |
+| GET | `/api/v1/inventory/stocktakings/{stocktaking}` | Staff+ | 詳細＋明細 |
+| PUT | `/api/v1/inventory/stocktakings/{stocktaking}/lines` | Staff+ | 実地数の一括入力 |
+| POST | `/api/v1/inventory/stocktakings/{stocktaking}/confirm` | Staff+ | 確定（調整トランザクション発行） |
+| DELETE | `/api/v1/inventory/stocktakings/{stocktaking}` | Staff+ | 中止（下書きのみ） |
 
-### 3.6 マスタ・管理
+### 3.6 マスタ・ダッシュボード
 
 | メソッド | パス | 権限 | 説明 |
 |---|---|---|---|
-| GET/POST/PUT/DELETE | `/api/v1/categories` | 参照:全員 / 更新:Admin | カテゴリ |
-| GET/POST/PUT/DELETE | `/api/v1/warehouses` | 参照:全員 / 更新:Admin | 保管場所 |
-| GET/POST/PUT/DELETE | `/api/v1/users` | Admin | ユーザー |
-| GET | `/api/v1/audit-logs` | Admin | 監査ログ |
-| GET | `/api/v1/dashboard` | 全員 | ダッシュボード集計 |
+| GET/POST/PUT/DELETE | `/api/v1/inventory/categories` | 参照:全員 / 更新:Admin | カテゴリ |
+| GET/POST/PUT/DELETE | `/api/v1/inventory/warehouses` | 参照:全員 / 更新:Admin | 保管場所 |
+| GET | `/api/v1/inventory/dashboard` | 全員 | ダッシュボード集計 |
 
 ---
 
 ## 4. 主要エンドポイント詳細
 
-### 4.1 `GET /api/v1/items` — 備品一覧
+### 4.1 `GET /api/v1/inventory/items` — 備品一覧
 
 **クエリパラメータ**
 
@@ -306,7 +183,7 @@ Idempotency-Key: 6f8a1c2e-....
 
 ---
 
-### 4.2 `POST /api/v1/items/{item}/issues` — 出庫登録
+### 4.2 `POST /api/v1/inventory/items/{item}/issues` — 出庫登録
 
 **ヘッダ**
 
@@ -366,7 +243,7 @@ X-XSRF-TOKEN: ...
 
 ---
 
-### 4.3 `POST /api/v1/stock-transactions/{transaction}/reversal` — 取消
+### 4.3 `POST /api/v1/inventory/stock-transactions/{transaction}/reversal` — 取消
 
 **リクエスト**
 
@@ -402,7 +279,7 @@ X-XSRF-TOKEN: ...
 
 ---
 
-### 4.4 `POST /api/v1/loans` — 貸出登録
+### 4.4 `POST /api/v1/inventory/loans` — 貸出登録
 
 **リクエスト**
 
@@ -434,7 +311,7 @@ X-XSRF-TOKEN: ...
 
 ---
 
-### 4.5 `POST /api/v1/loans/{loan}/returns` — 返却登録
+### 4.5 `POST /api/v1/inventory/loans/{loan}/returns` — 返却登録
 
 **リクエスト**
 
@@ -458,7 +335,7 @@ X-XSRF-TOKEN: ...
 
 ---
 
-### 4.6 `POST /api/v1/stocktakings` — 棚卸し開始
+### 4.6 `POST /api/v1/inventory/stocktakings` — 棚卸し開始
 
 **リクエスト**
 
@@ -472,7 +349,7 @@ X-XSRF-TOKEN: ...
 
 ---
 
-### 4.7 `POST /api/v1/stocktakings/{stocktaking}/confirm` — 棚卸し確定
+### 4.7 `POST /api/v1/inventory/stocktakings/{stocktaking}/confirm` — 棚卸し確定
 
 **リクエスト** — 本文なし（`Idempotency-Key` 必須）
 
@@ -515,7 +392,7 @@ X-XSRF-TOKEN: ...
 
 ---
 
-### 4.8 `PUT /api/v1/items/{item}` — 備品更新（楽観ロック）
+### 4.8 `PUT /api/v1/inventory/items/{item}` — 備品更新（楽観ロック）
 
 **リクエスト** — `version` を必須で送る
 
@@ -545,7 +422,7 @@ X-XSRF-TOKEN: ...
 
 ---
 
-### 4.9 `GET /api/v1/dashboard`
+### 4.9 `GET /api/v1/inventory/dashboard`
 
 ```json
 {
@@ -600,4 +477,5 @@ X-XSRF-TOKEN: ...
 | 版 | 日付 | 内容 |
 |---|---|---|
 | 1.0 | 2026-09-03 | 初版 |
+| 2.0 | 2026-09-06 | 複数システム構成へ移行。共通仕様・認証・ユーザー管理を `docs/common/api-design.md` へ分離し、全パスに `/inventory` プレフィックスを付与 |
 | 1.1 | 2026-09-03 | 冪等性キーの実装方式を明確化し、関連エラーコードを追加 |
