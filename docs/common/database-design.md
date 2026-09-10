@@ -2,7 +2,7 @@
 
 | 項目 | 内容 |
 |---|---|
-| バージョン | 1.0 |
+| バージョン | 1.2 |
 | 作成日 | 2026-09-06 |
 | 対象 DBMS | MySQL 8.0（InnoDB） |
 | 関連文書 | `docs/architecture.md` / `docs/common/requirements.md` |
@@ -36,7 +36,9 @@
 | 日付のみ | `_on` サフィックス | `due_on` |
 | インデックス | `idx_<テーブル>_<カラム列>` | `idx_stock_tx_item_occurred` |
 | ユニーク制約 | `uq_<テーブル>_<カラム列>` | `uq_items_code` |
-| 外部キー制約 | `fk_<テーブル>_<カラム>` | `fk_items_category_id` |
+| 外部キー制約 | Laravel の既定 `<テーブル>_<カラム>_foreign` に従う | `items_category_id_foreign` |
+
+> **インデックスとユニーク制約は名前を明示的に指定し、外部キーは Laravel の既定に任せる。** 索引名は「あとで落とす」ときに必ず必要になるため、規約に沿った名前を自分で付ける。一方、外部キーは `dropForeign(['column_name'])` と列名で指定でき、既定の命名を前提に Laravel が名前を解決してくれるため、あえて逆らわない。
 
 ### 1.3 共通カラム
 
@@ -95,7 +97,7 @@ $table->unique('email_unique_key', 'uq_users_email');
 | カラム | 型 | NULL | デフォルト | 説明 |
 |---|---|---|---|---|
 | `id` | BIGINT UNSIGNED | NO | AUTO | |
-| `name` | VARCHAR(100) | NO | | 氏名 |
+| `name` | VARCHAR(255) | NO | | 氏名。Laravel 標準の `users` テーブルの定義をそのまま使う |
 | `email` | VARCHAR(255) | NO | | ログイン ID。**小文字に正規化して保存** |
 | `email_verified_at` | TIMESTAMP | YES | NULL | |
 | `password` | VARCHAR(255) | NO | | bcrypt ハッシュ |
@@ -169,9 +171,11 @@ $table->unique('email_unique_key', 'uq_users_email');
 **制約・索引**
 
 - `uq_system_user_roles` UNIQUE (`user_id`, `system_id`) — 1ユーザーが1システムに持つロールは1つ
-- `idx_system_user_roles_user` INDEX (`user_id`) — ポータルの表示に使う
-- `fk_system_user_roles_user_id` FK → `users`(`id`) ON DELETE CASCADE
-- `fk_system_user_roles_system_id` FK → `systems`(`id`) ON DELETE RESTRICT
+- FK `user_id` → `users`(`id`) ON DELETE CASCADE
+- FK `system_id` → `systems`(`id`) ON DELETE RESTRICT
+- FK `granted_by` → `users`(`id`) ON DELETE SET NULL
+
+> **`user_id` 単独のインデックスは張らない。** 複合ユニーク (`user_id`, `system_id`) の左端が `user_id` であるため、`WHERE user_id = ?`（ポータル表示で使う）はこの索引で処理できる。単独索引を追加しても重複するだけで、書き込みコストと容量を無駄に増やす。
 
 > **この行の有無がアクセス権そのもの。** 行が無ければそのシステムを使えず、ポータルにも表示されない（共通要件定義書 §7-3）。
 >
@@ -258,4 +262,6 @@ $table->unique('email_unique_key', 'uq_users_email');
 
 | 版 | 日付 | 内容 |
 |---|---|---|
+| 1.2 | 2026-09-11 | `users.name` の長さを実装（Laravel 標準の 255）に合わせた |
+| 1.1 | 2026-09-10 | `system_user_roles` の冗長な単独インデックスを削除。外部キーの命名規約を Laravel の既定に合わせた |
 | 1.0 | 2026-09-06 | 初版。備品在庫管理の DB 設計書から共通部分を分離し、`systems` / `system_user_roles` を追加 |
