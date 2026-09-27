@@ -23,36 +23,55 @@ export function LoginPage() {
   }
 
   return (
-    <main>
-      <h1>office-hub</h1>
-      <form onSubmit={handleSubmit}>
-        <div>
-          <label htmlFor="email">メールアドレス</label>
-          <input
-            id="email"
-            type="email"
-            autoComplete="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-          />
-        </div>
-        <div>
-          <label htmlFor="password">パスワード</label>
-          <input
-            id="password"
-            type="password"
-            autoComplete="current-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-          />
-        </div>
-        {error && <p role="alert">{error}</p>}
-        <button type="submit" disabled={isSubmitting}>
-          {isSubmitting ? 'ログイン中…' : 'ログイン'}
-        </button>
-      </form>
+    <main className="flex min-h-screen items-center justify-center px-4">
+      <div className="w-full max-w-sm">
+        <h1 className="mb-8 text-center text-2xl font-bold tracking-tight">office-hub</h1>
+        <form
+          onSubmit={handleSubmit}
+          className="space-y-5 rounded-xl border border-slate-200 bg-white p-8 shadow-sm"
+        >
+          <div className="space-y-1.5">
+            <label htmlFor="email" className="block text-sm font-medium text-slate-700">
+              メールアドレス
+            </label>
+            <input
+              id="email"
+              type="email"
+              autoComplete="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+              className="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 focus:outline-none"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label htmlFor="password" className="block text-sm font-medium text-slate-700">
+              パスワード
+            </label>
+            <input
+              id="password"
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              className="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 focus:outline-none"
+            />
+          </div>
+          {error && (
+            <p role="alert" className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
+              {error}
+            </p>
+          )}
+          <button
+            type="submit"
+            disabled={isSubmitting}
+            className="w-full rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isSubmitting ? 'ログイン中…' : 'ログイン'}
+          </button>
+        </form>
+      </div>
     </main>
   )
 }

@@ -5,7 +5,7 @@ export function GuestOnly() {
   const { user, isLoading } = useAuth()
 
   if (isLoading) {
-    return <p>読み込み中…</p>
+    return <p className="p-8 text-center text-sm text-slate-500">読み込み中…</p>
   }
 
   if (user !== null) {
