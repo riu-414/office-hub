@@ -131,6 +131,13 @@
 | `STALE_VERSION` | 409 | 楽観ロックの衝突 |
 | `REQUEST_IN_PROGRESS` | 409 | 同じ冪等性キーの処理が進行中 |
 | `IDEMPOTENCY_KEY_REUSED` | 422 | 同じ冪等性キーで異なる内容を送信した |
+| `NOT_FOUND` | 404 | URL またはリソースが存在しない |
+| `METHOD_NOT_ALLOWED` | 405 | その URL で許可されていない HTTP メソッド |
+| `TOO_MANY_REQUESTS` | 429 | レート制限を超えた（`Retry-After` ヘッダで待ち時間を返す） |
+| `HTTP_ERROR` | その他 4xx | 上記以外の HTTP エラー |
+| `SERVER_ERROR` | 500 | 想定外のエラー。本番では例外の詳細を返さず、ログにのみ残す |
+
+すべてのエラーは `bootstrap/app.php` の `withExceptions` で §1.5 の形式に変換する。`APP_DEBUG=true`（開発環境）のときだけ、500 は Laravel 標準の詳細表示（例外名・ファイル・スタックトレース）を返す。
 
 各システム固有のエラーコードは、そのシステムの API 設計書に定義する。
 
